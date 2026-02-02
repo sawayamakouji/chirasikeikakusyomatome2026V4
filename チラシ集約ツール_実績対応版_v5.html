@@ -1,0 +1,1218 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>チラシ情報 集約ツール (M2/N2/R2 + 部門別セールステーマ + 商品情報 / 全シート対応)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- SheetJS (CDN版) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 16px;
+      line-height: 1.5;
+    }
+    h1 {
+      font-size: 20px;
+      margin: 0 0 8px;
+    }
+    /* タイトル＋操作パネルを画面上部に固定 */
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 200;
+      background-color: #ffffff;
+      padding-bottom: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.06);
+    }
+    .panel {
+      border: 1px solid #ccc;
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      background-color: #fff;
+    }
+    label {
+      display: inline-block;
+      margin-right: 8px;
+    }
+    input[type="number"],
+    input[type="file"] {
+      margin: 4px 0;
+    }
+    button {
+      padding: 6px 12px;
+      margin-right: 8px;
+      cursor: pointer;
+    }
+
+    /* テーブルを囲むスクロールコンテナ */
+    #tableContainer {
+      margin-top: 12px;
+      max-height: calc(100vh - 220px);
+      overflow: auto;
+      border: 1px solid #ccc;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 4px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background-color: #f2f2f2;
+      white-space: nowrap;
+    }
+    /* テーブルのヘッダー行をスクロール固定 */
+    #resultTable thead th {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      background-color: #f2f2f2;
+    }
+
+    .small {
+      font-size: 12px;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>チラシ情報 集約ツール (M2/N2/R2 + 部門別セールステーマ + 商品情報 / 全シート対応)</h1>
+
+    <div class="panel">
+      <div>
+        <label for="baseYear">年が書いていないときの基準年:</label>
+        <input type="number" id="baseYear" value="2025" style="width:80px;" />
+        <span class="small">例: 「12/1~12/3」→ この年の12月1日〜3日として解釈</span>
+      </div>
+
+      <div style="margin-top:8px;">
+        <label for="fileInput">Excelファイルを選択 (複数可):</label><br />
+        <input type="file" id="fileInput" multiple accept=".xlsx,.xlsm,.xlsb,.xls" />
+      </div>
+
+      <div style="margin-top:8px;">
+        <button id="clearBtn">一覧をクリア</button>
+        <button id="downloadBtn">CSVダウンロード（詳細一覧）</button>
+        <button id="downloadKeysBtn">単品キー一覧CSVダウンロード</button>
+      </div>
+
+      <div class="small" style="margin-top:8px;">
+        各ファイルの<strong>すべてのシート</strong>から、<br/>
+        ・<strong>M2: チラシ期間</strong> / <strong>N2: 売り出しタイトル</strong> / <strong>R2: 実施店舗</strong><br/>
+        ・4行目以降：<br/>
+        　- <strong>T列=部門ヘッダ(畜産 12i など)</strong> → 部門名＋枠数を取得<br/>
+        　- <strong>B列=セールステーマ</strong><br/>
+        　- <strong>M列=販売日付(期間)</strong><br/>
+        　- <strong>Q, S, T, U, V, Z, AA, AB 列=商品情報</strong><br/>
+        を取得して一覧化します。<br/>
+        また、ファイル名中の「12-1」を <strong>12-01</strong> のように整形した「チラシ日付(ファイル名)」列も作成します。<br/>
+        別途「単品キー一覧CSV」では、店舗マスタを使って <strong>店コード×日付×JAN</strong> のキー一覧を出力します。
+      </div>
+    </div>
+  </div>
+
+  <div id="tableContainer">
+    <table id="resultTable">
+      <thead>
+        <tr>
+          <th>ファイル名</th>
+          <th>シート名</th>
+          <th>チラシ日付(ファイル名)</th>
+          <th>チラシ開始日 (M2)</th>
+          <th>チラシ終了日 (N2)</th>
+          <th>売り出しタイトル (N2)</th>
+          <th>実施店舗 (R2)</th>
+          <th>部門 (T列ヘッダ)</th>
+          <th>枠数 (T列の○i)</th>
+          <th>セールテーマ (B列)</th>
+          <th>商品情報Q (Q列)</th>
+          <th>商品情報S (S列)</th>
+          <th>商品名 (T列)</th>
+          <th>商品情報U (U列)</th>
+          <th>商品情報V (V列)</th>
+          <th>商品情報Z (Z列)</th>
+          <th>商品情報AA (AA列)</th>
+          <th>商品情報AB (AB列)</th>
+          <th>販売開始日 (M列)</th>
+          <th>販売終了日 (N列)</th>
+          <th>販売日付(元文字列 M)</th>
+          <th>チラシ期間(元文字列 M2)</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <script>
+    // =====================================================
+    // 店舗マスタ（例）
+    // 実際には全店分をここに追加してください。
+    // gyotai: チラシ業態, store_cd: 店コード,
+    // name_official: 正式店舗名, name_plan: 計画書で使う店名
+    // =====================================================
+const STORE_MASTER = [
+  // GMS業態
+  { gyotai: 'ＧＭＳ業態', store_cd: '32016', name_official: '旭ヶ丘',         name_plan: '旭ヶ丘' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6345',  name_official: '旭川永山',       name_plan: '旭川永山' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6365',  name_official: '旭川駅前',       name_plan: '旭川駅前' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6341',  name_official: '旭川春光',       name_plan: '春光' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '2010',  name_official: '旭川西',         name_plan: '旭川西' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6344',  name_official: '伊達',           name_plan: '伊達' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '80427', name_official: '栄町',           name_plan: '栄町' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6358',  name_official: '岩見沢',         name_plan: '岩見沢' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '80412', name_official: '琴似',           name_plan: '琴似' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6347',  name_official: '釧路',           name_plan: '釧路' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '2314',  name_official: '釧路昭和',       name_plan: '昭和' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '686',   name_official: '桑園',           name_plan: '桑園' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '2011',  name_official: '元町',           name_plan: '元町' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6339',  name_official: '厚岸',           name_plan: '厚岸' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '71931', name_official: '厚別',           name_plan: '厚別' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6348',  name_official: '江別',           name_plan: '江別' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6332',  name_official: '根室',           name_plan: '根室' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '1305',  name_official: '三笠',           name_plan: '三笠' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6335',  name_official: '室蘭',           name_plan: '室蘭' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '32014', name_official: '手稲駅前',       name_plan: '手稲駅前' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '1307',  name_official: '手稲山口',       name_plan: '手稲山口' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6355',  name_official: '小樽',           name_plan: '小樽' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '80702', name_official: '上磯',           name_plan: '上磯' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '80413', name_official: '新さっぽろ',     name_plan: '新さっぽろ' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6323',  name_official: '西岡',           name_plan: '西岡' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '32015', name_official: '西町',           name_plan: '西町' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6342',  name_official: '静内',           name_plan: '静内' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '1306',  name_official: '石狩緑苑台',     name_plan: '石狩' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6354',  name_official: '千歳',           name_plan: '千歳' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6349',  name_official: '藻岩',           name_plan: '藻岩' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6350',  name_official: '帯広',           name_plan: '帯広' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '80707', name_official: '滝川',           name_plan: '滝川' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6336',  name_official: '登別',           name_plan: '登別' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '80418', name_official: '東',             name_plan: '東札幌' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '80734', name_official: '湯川',           name_plan: '湯川' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '3026',  name_official: '苫小牧',         name_plan: '苫小牧' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '3000',  name_official: '発寒',           name_plan: '発寒' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '2012',  name_official: '苗穂',           name_plan: '苗穂' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '2315',  name_official: '平岡',           name_plan: '平岡' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '32018', name_official: '平岸',           name_plan: '平岸' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6356',  name_official: '北見',           name_plan: '北見' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '80414', name_official: '麻生',           name_plan: '麻生' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6378',  name_official: '名寄',           name_plan: '名寄' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6343',  name_official: '紋別',           name_plan: '紋別' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '6346',  name_official: '余市',           name_plan: '余市' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '4386',  name_official: 'ＭＶ北郷',       name_plan: '北郷' },
+  { gyotai: 'ＧＭＳ業態', store_cd: '2927',  name_official: 'ＭＶ南平岸',     name_plan: '南平岸' },
+
+  // SM業態
+  { gyotai: 'ＳＭ業態',   store_cd: '797',   name_official: 'ＭＶ沼ノ端',       name_plan: '沼ノ端' },
+  { gyotai: 'ＳＭ業態',   store_cd: '1450',  name_official: 'ＭＶＥＸ新川３条', name_plan: '新川3条' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3034',  name_official: 'ＭＶＥＸ新道',     name_plan: '新道' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3052',  name_official: 'ＭＶＥＸ中の島',   name_plan: '中の島' },
+  { gyotai: 'ＳＭ業態',   store_cd: '4376',  name_official: 'ＭＶＥＸ発寒南駅前', name_plan: '発寒南駅前' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3039',  name_official: 'ＭＶＦ円山',       name_plan: '円山' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3038',  name_official: 'ＭＶＦ月寒中央',   name_plan: '月寒中央' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3031',  name_official: 'ＭＶＦ森林公園',   name_plan: '森林公園' },
+  { gyotai: 'ＳＭ業態',   store_cd: '80729', name_official: 'ＭＶマルヤマクラス', name_plan: 'マルヤマクラス' },
+  { gyotai: 'ＳＭ業態',   store_cd: '4392',  name_official: 'ＭＶ芦別',         name_plan: '芦別' },
+  { gyotai: 'ＳＭ業態',   store_cd: '1685',  name_official: 'ＭＶ稲田',         name_plan: '稲田' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3044',  name_official: 'ＭＶ音更',         name_plan: '音更' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3049',  name_official: 'ＭＶ菊水',         name_plan: '菊水' },
+  { gyotai: 'ＳＭ業態',   store_cd: '36723', name_official: 'ＭＶ宮の沢',       name_plan: '宮の沢' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3598',  name_official: 'ＭＶ共和',         name_plan: '共和' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3042',  name_official: 'ＭＶ琴似',         name_plan: '琴似3条' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3372',  name_official: 'ＭＶ琴似３条',     name_plan: '琴似３条' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3491',  name_official: 'ＭＶ倶知安',       name_plan: '倶知安' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2913',  name_official: 'ＭＶ栗山',         name_plan: '栗山' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2007',  name_official: 'ＭＶ恵庭',         name_plan: '恵庭' },
+  { gyotai: 'ＳＭ業態',   store_cd: '38780', name_official: 'ＭＶ月寒西',       name_plan: '月寒西' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3048',  name_official: 'ＭＶ元町',         name_plan: '元町' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3040',  name_official: 'ＭＶ光星',         name_plan: '光星' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2747',  name_official: 'ＭＶ厚別',         name_plan: '厚別' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3597',  name_official: 'ＭＶ厚別東',       name_plan: '厚別東' },
+  { gyotai: 'ＳＭ業態',   store_cd: '1683',  name_official: 'ＭＶ山鼻',         name_plan: '山鼻' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3221',  name_official: 'ＭＶ支笏湖通',     name_plan: '支笏湖' },
+  { gyotai: 'ＳＭ業態',   store_cd: '70019', name_official: 'ＭＶ若松',         name_plan: '若松' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2003',  name_official: 'ＭＶ手宮',         name_plan: '手宮' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2975',  name_official: 'ＭＶ上江別',       name_plan: '上江別' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2990',  name_official: 'ＭＶ新花園',       name_plan: '新花園' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3216',  name_official: 'ＭＶ新琴似',       name_plan: '新琴似' },
+  { gyotai: 'ＳＭ業態',   store_cd: '31310', name_official: 'ＭＶ新発寒',       name_plan: '新発寒' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2005',  name_official: 'ＭＶ深川',         name_plan: '深川' },
+  { gyotai: 'ＳＭ業態',   store_cd: '70018', name_official: 'ＭＶ深堀',         name_plan: '深堀' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3050',  name_official: 'ＭＶ澄川',         name_plan: '澄川' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3219',  name_official: 'ＭＶ澄川町',       name_plan: '澄川町' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3224',  name_official: 'ＭＶ静内',         name_plan: '静内' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2963',  name_official: 'ＭＶ石川',         name_plan: '石川' },
+  { gyotai: 'ＳＭ業態',   store_cd: '4387',  name_official: 'ＭＶ赤平',         name_plan: '赤平' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2960',  name_official: 'ＭＶ滝川',         name_plan: '滝川' },
+  { gyotai: 'ＳＭ業態',   store_cd: '6427',  name_official: 'ＭＶ滝川本町',     name_plan: '滝川本町' },
+  { gyotai: 'ＳＭ業態',   store_cd: '1805',  name_official: 'ＭＶ池田',         name_plan: '池田' },
+  { gyotai: 'ＳＭ業態',   store_cd: '1808',  name_official: 'ＭＶ中札内',       name_plan: '中札内' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3485',  name_official: 'ＭＶ登別',         name_plan: '登別' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2992',  name_official: 'ＭＶ東札幌',       name_plan: '東札幌' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3223',  name_official: 'ＭＶ苫小牧清水',   name_plan: '苫小牧清水' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3497',  name_official: 'ＭＶ南１５条',     name_plan: '南15条' },
+  { gyotai: 'ＳＭ業態',   store_cd: '4385',  name_official: 'ＭＶ日新',         name_plan: '日新' },
+  { gyotai: 'ＳＭ業態',   store_cd: '80736', name_official: 'ＭＶ八雲',         name_plan: '八雲' },
+  { gyotai: 'ＳＭ業態',   store_cd: '6706',  name_official: 'ＭＶ八軒５条',     name_plan: '八軒5条' },
+  { gyotai: 'ＳＭ業態',   store_cd: '80741', name_official: 'ＭＶ富川',         name_plan: '富川' },
+  { gyotai: 'ＳＭ業態',   store_cd: '80738', name_official: 'ＭＶ弁天',         name_plan: '弁天' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3032',  name_official: 'ＭＶ北',           name_plan: '北' },
+  { gyotai: 'ＳＭ業態',   store_cd: '38371', name_official: 'ＭＶ北１条東',     name_plan: '北1条東' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3045',  name_official: 'ＭＶ北２６条',     name_plan: '北26条' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2912',  name_official: 'ＭＶ北３２条',     name_plan: '北32条' },
+  { gyotai: 'ＳＭ業態',   store_cd: '31173', name_official: 'ＭＶ北４０条',     name_plan: '北40条' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2915',  name_official: 'ＭＶ北広島',       name_plan: '北広島' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3218',  name_official: 'ＭＶ北野',         name_plan: '北野' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2969',  name_official: 'ＭＶ堀川',         name_plan: '堀川' },
+  { gyotai: 'ＳＭ業態',   store_cd: '80739', name_official: 'ＭＶ万代',         name_plan: '万代' },
+  { gyotai: 'ＳＭ業態',   store_cd: '3055',  name_official: 'ＭＶ名寄',         name_plan: '名寄' },
+  { gyotai: 'ＳＭ業態',   store_cd: '798',   name_official: 'ＭＶ弥生',         name_plan: '弥生' },
+  { gyotai: 'ＳＭ業態',   store_cd: '2008',  name_official: 'ＭＶ留萌',         name_plan: '留萌' }
+];
+
+    // =====================================================
+    // DOM 取得
+    // =====================================================
+    const fileInput = document.getElementById('fileInput');
+    const baseYearInput = document.getElementById('baseYear');
+    const resultTableBody = document.querySelector('#resultTable tbody');
+    const clearBtn = document.getElementById('clearBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const downloadKeysBtn = document.getElementById('downloadKeysBtn');
+
+    // 何行目からデータを読むか（Excel上での行番号 1-based）
+    const FIRST_DATA_ROW_EXCEL = 4;  // 4行目以降の商品情報
+
+    // 集約結果（詳細一覧用）
+    const results = [];
+    // 店コード×日付×JAN のキー一覧
+    const itemKeys = [];
+
+    fileInput.addEventListener('change', handleFiles);
+    clearBtn.addEventListener('click', () => {
+      results.length = 0;
+      itemKeys.length = 0;
+      resultTableBody.innerHTML = '';
+      fileInput.value = '';
+    });
+    downloadBtn.addEventListener('click', downloadCSV);
+    downloadKeysBtn.addEventListener('click', downloadKeysCSV);
+
+    // =====================================================
+    // メイン処理
+    // =====================================================
+    function handleFiles() {
+      const files = Array.from(fileInput.files || []);
+      if (files.length === 0) return;
+
+      const baseYear = parseInt(baseYearInput.value, 10) || new Date().getFullYear();
+
+      files.forEach(file => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+
+            // ファイル名からチラシ日付(例: 12-1 → 12-01)を抽出
+            const flyerDayFromName = extractFlyerDayFromFilename(file.name);
+
+            // すべてのシートを対象に処理
+            workbook.SheetNames.forEach(sheetName => {
+              const ws = workbook.Sheets[sheetName];
+              if (!ws || !ws['!ref']) {
+                // 空シートはスキップ
+                return;
+              }              // M2 / N2 / O2 / S2 / R2 (チラシ全体情報)
+              // 旧フォーマット: M2=期間文字列, N2=タイトル, R2=店舗
+              // 実績フォーマット: M2=開始日, N2=終了日, O2=タイトル, S2=店舗
+              const m2 = getCellValue(ws, 'M2');
+              const n2 = getCellValue(ws, 'N2');
+              const o2 = getCellValue(ws, 'O2');
+              const s2 = getCellValue(ws, 'S2');
+              const r2 = getCellValue(ws, 'R2');
+
+              const flyerPeriod = parseFlyerPeriod(m2, n2, baseYear); // {startDate, endDate} or null
+              const flyerStart = flyerPeriod ? flyerPeriod.startDate : '';
+              const flyerEnd   = flyerPeriod ? flyerPeriod.endDate   : '';
+
+              const titleText = (o2 || (typeof n2 === 'string' ? n2 : '') || '').toString().trim();
+              const storeText = (s2 || r2 || '').toString().trim();
+// シート単位のヘッダー行（見出しだけ）
+              const headerRow = {
+                fileName: file.name,
+                sheetName: sheetName,
+                flyerDayFromName: flyerDayFromName,
+                flyerStartDate: flyerStart,
+                flyerEndDate: flyerEnd,
+                title: titleText || '',
+                store: storeText || '',
+                dept: '',
+                frameCount: '',
+                saleTheme: '',
+                itemQ: '',
+                itemS: '',
+                itemNameT: '',
+                itemU: '',
+                itemV: '',
+                itemZ: '',
+                itemAA: '',
+                itemAB: '',
+                saleStartDate: '',
+                saleEndDate: '',
+                rawSaleDate: '',
+                rawPeriod: m2 || ''
+              };
+              results.push(headerRow);
+              appendRowToTable(headerRow);              // 店舗リスト（店コード＋店名）を取得（ファイル名の業態ヒントで曖昧名を解決）
+              const gyotaiHint = detectGyotaiFromFilename(file.name);
+              const stores = getStoresFromR2(storeText, gyotaiHint);
+
+              // 実績フォーマット（R3=スキャンコード など）の場合は別ロジックで読み取り
+              if (isPerformanceSheet(ws)) {
+                processPerformanceSheet({
+                  ws,
+                  fileName: file.name,
+                  sheetName,
+                  flyerDayFromName,
+                  flyerStart,
+                  flyerEnd,
+                  flyerPeriodText: m2,
+                  titleText,
+                  storeText,
+                  baseYear,
+                  stores,
+                  results,
+                  itemKeys
+                });
+                return;
+              }
+// 4行目以降を走査
+              const ref = ws['!ref'] || 'A1:A1';
+              const range = XLSX.utils.decode_range(ref);
+              let currentDept = '';
+              let currentFrames = '';
+
+              for (let r = FIRST_DATA_ROW_EXCEL - 1; r <= range.e.r; r++) {  // 0-based; 4行目=3
+                const addrQ  = XLSX.utils.encode_cell({ c: 16, r: r }); // Q列
+                const addrS  = XLSX.utils.encode_cell({ c: 18, r: r }); // S列
+                const addrT  = XLSX.utils.encode_cell({ c: 19, r: r }); // T列
+                const addrU  = XLSX.utils.encode_cell({ c: 20, r: r }); // U列
+                const addrV  = XLSX.utils.encode_cell({ c: 21, r: r }); // V列
+                const addrZ  = XLSX.utils.encode_cell({ c: 25, r: r }); // Z列
+                const addrAA = XLSX.utils.encode_cell({ c: 26, r: r }); // AA列
+                const addrAB = XLSX.utils.encode_cell({ c: 27, r: r }); // AB列
+
+                const addrB  = XLSX.utils.encode_cell({ c: 1,  r: r }); // B列
+                const addrM  = XLSX.utils.encode_cell({ c: 12, r: r }); // M列（販売開始/チラシ開始）
+                const addrN  = XLSX.utils.encode_cell({ c: 13, r: r }); // N列（販売終了/チラシ終了）
+
+                let itemQRaw  = getCellValue(ws, addrQ).trim();   // JAN/コード（複数可: 改行/空白区切りなど）
+                if (!itemQRaw) {
+                  // テンプレによってはコード列がR（スキャンコード）にある
+                  const addrR = XLSX.utils.encode_cell({ c: 17, r: r }); // R列
+                  itemQRaw = getCellValue(ws, addrR).trim();
+                }
+                const janList = parseJanCodes(itemQRaw);
+                const itemS  = getCellValue(ws, addrS).trim();
+                let   tRaw   = getCellValue(ws, addrT).trim();   // 部門ヘッダ or 商品名
+                const itemU  = getCellValue(ws, addrU).trim();
+                const itemV  = getCellValue(ws, addrV).trim();
+                const itemZ  = getCellValue(ws, addrZ).trim();
+                const itemAA = getCellValue(ws, addrAA).trim();
+                const itemAB = getCellValue(ws, addrAB).trim();
+
+                const themeVal = getCellValue(ws, addrB).trim(); // セールテーマ
+                const saleStartRaw = getCellValue(ws, addrM).trim(); // 販売開始/チラシ開始（M列）
+                const saleEndRaw   = getCellValue(ws, addrN).trim(); // 販売終了/チラシ終了（N列）
+
+                // M/Nが別列で入っている場合と、Mに期間文字列が入っている場合の両対応
+                let saleRaw = '';
+                let salePeriod = null; // {startDate, endDate}
+                if (saleStartRaw && saleEndRaw) {
+                  saleRaw = `${saleStartRaw}~${saleEndRaw}`;
+                  const sp = parsePeriod(saleStartRaw, baseYear);
+                  const ep = parsePeriod(saleEndRaw,   baseYear);
+                  const sD = sp ? sp.startDate : '';
+                  const eD = ep ? ep.endDate   : '';
+                  if (sD || eD) {
+                    salePeriod = { startDate: sD || eD, endDate: eD || sD };
+                  }
+                } else if (saleStartRaw || saleEndRaw) {
+                  const one = saleStartRaw || saleEndRaw;
+                  saleRaw = one;
+                  salePeriod = parsePeriod(one, baseYear);
+                } else {
+                  saleRaw = '';
+                  salePeriod = null;
+                }
+
+                // 「部門ヘッダ行」判定: Tに値があり、BもMも空 → 部門名と枠数をセットしてスキップ
+                if (tRaw && !themeVal && !saleStartRaw && !saleEndRaw) {
+                  const parsed = parseDeptAndFrames(tRaw);
+                  currentDept = parsed.deptName;
+                  currentFrames = parsed.frames;
+                  continue;
+                }
+
+                // 部門名がまだ決まっていない行はスキップ
+                if (!currentDept) continue;
+
+                // BもMも両方空ならスキップ（セール行ではないとみなす）
+                if (!themeVal && !saleStartRaw && !saleEndRaw) continue;
+
+                const saleStart = salePeriod ? salePeriod.startDate : '';
+                const saleEnd   = salePeriod ? salePeriod.endDate   : '';
+
+// JANコード（Q列）は複数記入（改行/空白区切り等）があり得るので分解
+                let janCandidates = (janList && janList.length) ? janList.slice() : [];
+                if (janCandidates.length === 0) {
+                  const fallback = normalizeJan(itemQRaw);
+                  if (fallback) janCandidates = [fallback];
+                }
+                // 何も取れない場合は空JANの行を1つだけ残す（可視化用）
+                if (janCandidates.length === 0) janCandidates = [''];
+
+                janCandidates.forEach((janCode) => {
+                  // 詳細一覧用の行
+                  const row = {
+                    fileName: file.name,
+                    sheetName: sheetName,
+                    flyerDayFromName: flyerDayFromName,
+                    flyerStartDate: flyerStart,
+                    flyerEndDate: flyerEnd,
+                    title: n2 || '',
+                    store: r2 || '',
+                    dept: currentDept,
+                    frameCount: currentFrames,
+                    saleTheme: themeVal,
+                    itemQ: janCode,
+                    itemS: itemS,
+                    itemNameT: tRaw,
+                    itemU: itemU,
+                    itemV: itemV,
+                    itemZ: itemZ,
+                    itemAA: itemAA,
+                    itemAB: itemAB,
+                    saleStartDate: saleStart,
+                    saleEndDate: saleEnd,
+                    rawSaleDate: saleRaw,
+                    rawPeriod: m2 || ''
+                  };
+                  results.push(row);
+                  appendRowToTable(row);
+
+                  // ===== 単品キー一覧（店コード × 日付 × JAN）作成 =====
+                  // 前提: JANあり、販売期間あり、店舗リストあり
+                  if (janCode && salePeriod &&
+                      stores.length > 0) {
+                    eachDate(salePeriod.startDate, salePeriod.endDate, (dateStr) => {
+                      stores.forEach(store => {
+                        itemKeys.push({
+                          fileName: file.name,
+                          sheetName: sheetName,
+                          storeCd: store.store_cd,
+                          storeNameOfficial: store.name_official,
+                          storeNamePlan: store.name_plan,
+                          gyotai: store.gyotai,
+                          salesDate: dateStr,
+                          jan: janCode,
+                          dept: currentDept,
+                          saleTheme: themeVal,
+                          flyerTitle: n2 || '',
+                          flyerStartDate: flyerStart,
+                          flyerEndDate: flyerEnd,
+                          saleStartDate: saleStart,
+                          saleEndDate: saleEnd,
+                          rawSaleDate: saleRaw,
+                          rawPeriod: m2 || ''
+                        });
+                      });
+                    });
+                  }
+                });
+              }
+            });
+
+} catch (err) {
+            console.error('ファイル処理中にエラー:', file.name, err);
+            alert('ファイル処理中にエラーが発生しました: ' + file.name + '\n' + err);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    // =====================================================
+    // ファイル名 → チラシ日付(MM-DD)
+    // =====================================================
+    function extractFlyerDayFromFilename(name) {
+      // "12-1", "12-01" などを対象
+      const m = name.match(/(\d{1,2})-(\d{1,2})/);
+      if (!m) return '';
+      const month = String(parseInt(m[1], 10)).padStart(2, '0');
+      const day   = String(parseInt(m[2], 10)).padStart(2, '0');
+      return `${month}-${day}`;
+    }
+
+    // =====================================================
+    // 「畜産 12i」「サービスデリ5i」→ 部門名＋枠数
+    // =====================================================
+    function parseDeptAndFrames(raw) {
+      let s = raw.trim();
+      const m = s.match(/(\d+)\s*i\s*$/);
+      let frames = '';
+      if (m) {
+        frames = m[1]; // "12", "5"
+        s = s.replace(/(\d+)\s*i\s*$/, '').trim();
+      }
+      const deptName = s;
+      return { deptName, frames };
+    }
+
+    // =====================================================
+    // Excelセルの値取得（シリアル日付もケア）
+    // =====================================================
+    function getCellValue(ws, addr) {
+      const cell = ws[addr];
+      if (!cell) return '';
+
+      // Excelの数値シリアル日付の場合は YYYY/M/D に変換
+      if (cell.t === 'n' && typeof cell.v === 'number' && cell.v > 20000 && cell.v < 60000) {
+        if (XLSX.SSF && typeof XLSX.SSF.parse_date_code === 'function') {
+          const d = XLSX.SSF.parse_date_code(cell.v);
+          if (d && d.y && d.m && d.d) {
+            return `${d.y}/${d.m}/${d.d}`;
+          }
+        }
+      }
+
+      if (cell.w != null) return String(cell.w);
+      if (cell.v != null) return String(cell.v);
+      return '';
+    }
+
+    // =====================================================
+    // 日付期間パース: "12/1～12/3" 等 → {startDate, endDate}
+    // =====================================================
+    function parsePeriod(text, defaultYear) {
+      if (!text) return null;
+      let s = String(text).trim();
+      if (!s) return null;
+
+      s = s.replace(/\r?\n/g, ' ');
+      s = s.replace(/上午\/下午.*$/g, '');
+      s = s.replace(/[午前後上午下午]\s*\d{1,2}[:時]\d{1,2}(?::\d{1,2})?.*$/g, '');
+      s = s.replace(/\d{1,2}時\d{1,2}分\d{1,2}秒.*$/g, '');
+      s = s.replace(/\d{1,2}:\d{2}(?::\d{2})?.*$/g, '');
+      s = s.replace(/[～〜\-ー－―]/g, '~');
+      s = s.replace(/\s+/g, '');
+      s = s.replace(/年/g, '/').replace(/月/g, '/').replace(/日/g, '');
+      s = s.replace(/\(.*?\)/g, '');
+
+      if (!s) return null;
+
+      let startPart = s;
+      let endPart = null;
+
+      if (s.includes('~')) {
+        const parts = s.split('~');
+        startPart = parts[0] || '';
+        endPart = parts[1] || '';
+      }
+
+      const start = parseDatePart(startPart, defaultYear, null);
+      if (!start) return null;
+
+      let end = null;
+      if (endPart && endPart.trim() !== '') {
+        end = parseDatePart(endPart, defaultYear, start.year);
+        if (!end) {
+          const justDay = endPart.trim().match(/^(\d{1,2})$/);
+          if (justDay) {
+            const d = parseInt(justDay[1], 10);
+            end = { year: start.year, month: start.month, day: d };
+          }
+        }
+      } else {
+        end = { ...start };
+      }
+
+      if (!end) end = { ...start };
+
+      const startDate = `${start.year}/${start.month}/${start.day}`;
+      const endDate = `${end.year}/${end.month}/${end.day}`;
+      return { startDate, endDate };
+    }
+
+    function parseDatePart(part, defaultYear, carryYear) {
+      part = (part || '').trim();
+      if (!part) return null;
+      const sp = part.split('/').filter(Boolean);
+
+      let year, month, day;
+
+      if (sp.length === 3) {
+        year = parseInt(sp[0], 10);
+        month = parseInt(sp[1], 10);
+        day = parseInt(sp[2], 10);
+      } else if (sp.length === 2) {
+        year = carryYear != null ? carryYear : defaultYear;
+        month = parseInt(sp[0], 10);
+        day = parseInt(sp[1], 10);
+      } else {
+        return null;
+      }
+
+      if (!year || !month || !day) return null;
+      return { year, month, day };
+    }
+
+    // =====================================================
+    // 日付を1日ずつループ: "YYYY/M/D" ～ "YYYY/M/D"
+    // =====================================================
+    function eachDate(startStr, endStr, callback) {
+      const [sy, sm, sd] = startStr.split('/').map(Number);
+      const [ey, em, ed] = endStr.split('/').map(Number);
+      if (!sy || !sm || !sd || !ey || !em || !ed) return;
+
+      const start = new Date(sy, sm - 1, sd);
+      const end   = new Date(ey, em - 1, ed);
+
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        const y = d.getFullYear();
+        const m = d.getMonth() + 1;
+        const day = d.getDate();
+        const dateStr = `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        callback(dateStr);
+      }
+    }
+
+    // =====================================================
+    // テーブル描画
+    // =====================================================
+    function appendRowToTable(row) {
+      const tr = document.createElement('tr');
+
+      const tdFile = document.createElement('td');
+      const tdSheet = document.createElement('td');
+      const tdFlyerDayName = document.createElement('td');
+      const tdFlyerStart = document.createElement('td');
+      const tdFlyerEnd = document.createElement('td');
+      const tdTitle = document.createElement('td');
+      const tdStore = document.createElement('td');
+      const tdDept = document.createElement('td');
+      const tdFrames = document.createElement('td');
+      const tdTheme = document.createElement('td');
+      const tdItemQ = document.createElement('td');
+      const tdItemS = document.createElement('td');
+      const tdItemNameT = document.createElement('td');
+      const tdItemU = document.createElement('td');
+      const tdItemV = document.createElement('td');
+      const tdItemZ = document.createElement('td');
+      const tdItemAA = document.createElement('td');
+      const tdItemAB = document.createElement('td');
+      const tdSaleStart = document.createElement('td');
+      const tdSaleEnd = document.createElement('td');
+      const tdSaleRaw = document.createElement('td');
+      const tdRawPeriod = document.createElement('td');
+
+      tdFile.textContent = row.fileName;
+      tdSheet.textContent = row.sheetName || '';
+      tdFlyerDayName.textContent = row.flyerDayFromName || '';
+      tdFlyerStart.textContent = row.flyerStartDate;
+      tdFlyerEnd.textContent = row.flyerEndDate;
+      tdTitle.textContent = row.title;
+      tdStore.textContent = row.store;
+      tdDept.textContent = row.dept;
+      tdFrames.textContent = row.frameCount || '';
+      tdTheme.textContent = row.saleTheme || row.theme || '';
+      tdItemQ.textContent = row.itemQ || '';
+      tdItemS.textContent = row.itemS || '';
+      tdItemNameT.textContent = row.itemNameT || '';
+      tdItemU.textContent = row.itemU || '';
+      tdItemV.textContent = row.itemV || '';
+      tdItemZ.textContent = row.itemZ || '';
+      tdItemAA.textContent = row.itemAA || '';
+      tdItemAB.textContent = row.itemAB || '';
+      tdSaleStart.textContent = row.saleStartDate;
+      tdSaleEnd.textContent = row.saleEndDate;
+      tdSaleRaw.textContent = row.rawSaleDate || row.rawSale || '';
+      tdRawPeriod.textContent = row.rawPeriod || '';
+
+      tr.appendChild(tdFile);
+      tr.appendChild(tdSheet);
+      tr.appendChild(tdFlyerDayName);
+      tr.appendChild(tdFlyerStart);
+      tr.appendChild(tdFlyerEnd);
+      tr.appendChild(tdTitle);
+      tr.appendChild(tdStore);
+      tr.appendChild(tdDept);
+      tr.appendChild(tdFrames);
+      tr.appendChild(tdTheme);
+      tr.appendChild(tdItemQ);
+      tr.appendChild(tdItemS);
+      tr.appendChild(tdItemNameT);
+      tr.appendChild(tdItemU);
+      tr.appendChild(tdItemV);
+      tr.appendChild(tdItemZ);
+      tr.appendChild(tdItemAA);
+      tr.appendChild(tdItemAB);
+      tr.appendChild(tdSaleStart);
+      tr.appendChild(tdSaleEnd);
+      tr.appendChild(tdSaleRaw);
+      tr.appendChild(tdRawPeriod);
+
+      resultTableBody.appendChild(tr);
+    }
+
+    // =====================================================
+    // 詳細一覧CSV ダウンロード
+    // =====================================================
+    function downloadCSV() {
+      if (results.length === 0) {
+        alert('データがありません。先にExcelファイルを読み込んでください。');
+        return;
+      }
+      const header = [
+        'ファイル名',
+        'シート名',
+        'チラシ日付(ファイル名)',
+        'チラシ開始日(M2)',
+        'チラシ終了日(M2)',
+        '売り出しタイトル(N2)',
+        '実施店舗(R2)',
+        '部門(T列ヘッダ)',
+        '枠数(T列の○i)',
+        'セールステーマ(B列)',
+        '商品情報Q(Q列)',
+        '商品情報S(S列)',
+        '商品名(T列)',
+        '商品情報U(U列)',
+        '商品情報V(V列)',
+        '商品情報Z(Z列)',
+        '商品情報AA(AA列)',
+        '商品情報AB(AB列)',
+        '販売開始日(M列)',
+        '販売終了日(M列)',
+        '販売日付(元文字列 M)',
+        'チラシ期間(元文字列 M2)'
+      ];
+      const lines = [];
+      lines.push(toCSVRow(header));
+      results.forEach(row => {
+        lines.push(
+          toCSVRow([
+            row.fileName,
+            row.sheetName || '',
+            row.flyerDayFromName || '',
+            row.flyerStartDate,
+            row.flyerEndDate,
+            row.title,
+            row.store,
+            row.dept,
+            row.frameCount || '',
+            (row.saleTheme || row.theme || ''),
+            row.itemQ || '',
+            row.itemS || '',
+            row.itemNameT || '',
+            row.itemU || '',
+            row.itemV || '',
+            row.itemZ || '',
+            row.itemAA || '',
+            row.itemAB || '',
+            row.saleStartDate,
+            row.saleEndDate,
+            (row.rawSaleDate || row.rawSale || ''),
+            row.rawPeriod
+          ])
+        );
+      });
+
+      const csv = '\uFEFF' + lines.join('\r\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'flyer_summary_detail.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    // =====================================================
+    // 単品キー一覧CSV ダウンロード（店コード × 日付 × JAN）
+    // =====================================================
+    function downloadKeysCSV() {
+      if (itemKeys.length === 0) {
+        alert('単品キー一覧が空です。JAN・販売期間・店舗が揃ったデータが必要です。');
+        return;
+      }
+      const header = [
+        'ファイル名',
+        'シート名',
+        'チラシ業態',
+        '店舗コード',
+        '店舗名(正式)',
+        '店舗名(計画書)',
+        '売上日',
+        'JANコード',
+        '部門',
+        'セールステーマ',
+        '売り出しタイトル(N2)',
+        'チラシ開始日(M2)',
+        'チラシ終了日(M2)',
+        '販売開始日(M列)',
+        '販売終了日(M列)',
+        '販売日付(元文字列M)',
+        'チラシ期間(元文字列M2)'
+      ];
+      const lines = [];
+      lines.push(toCSVRow(header));
+      itemKeys.forEach(k => {
+        lines.push(
+          toCSVRow([
+            k.fileName,
+            k.sheetName || '',
+            k.gyotai || '',
+            k.storeCd,
+            k.storeNameOfficial,
+            k.storeNamePlan,
+            k.salesDate,
+            k.jan,
+            k.dept,
+            k.saleTheme,
+            k.flyerTitle,
+            k.flyerStartDate,
+            k.flyerEndDate,
+            k.saleStartDate,
+            k.saleEndDate,
+            k.rawSaleDate,
+            k.rawPeriod
+          ])
+        );
+      });
+
+      const csv = '\uFEFF' + lines.join('\r\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'flyer_item_keys_store_date_jan.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    // =====================================================
+    // CSV行変換
+    // =====================================================
+    function toCSVRow(arr) {
+      return arr
+        .map((v) => {
+          const s = v == null ? '' : String(v);
+          if (/[",\r\n]/.test(s)) {
+            return '"' + s.replace(/"/g, '""') + '"';
+          }
+          return s;
+        })
+        .join(',');
+    }
+
+    // =====================================================
+    // 店名分割・クリーニング・店コード化
+    // =====================================================
+    function cleanStoreName(s) {
+      return (s || '')
+        .replace(/[()（）※＊\[\]【】]/g, '')
+        .trim();
+    }
+
+    // R2 に「旭川永山、厚別・苫小牧清水」などが入る想定
+    // カンマ / 全角カンマ / 読点 / 中黒 / 空白 / 改行 で分割
+    function splitPlanStoreNames(r2Text) {
+      if (!r2Text) return [];
+      return r2Text
+        .split(/[,\，、・\s\n]+/)
+        .map((s) => cleanStoreName(s))
+        .filter((s) => s.length > 0);
+    }
+
+    // R2文字列から、対応する店舗マスタ行（重複store_cdは除外）を取得
+    
+    // =====================================================
+    // フォーマット判定・補助（実績フォーマット対応）
+    // =====================================================
+    function detectGyotaiFromFilename(fileName) {
+      const upper = (fileName || '').toUpperCase();
+      if (upper.includes('GMS')) return 'ＧＭＳ業態';
+      if (upper.includes('SM'))  return 'ＳＭ業態';
+      return null;
+    }
+
+    function parseFlyerPeriod(m2, n2, baseYear) {
+      // 旧: M2="2/1~2/3" のような期間文字列
+      // 新: M2=開始日, N2=終了日
+      if (!m2 && !n2) return null;
+      const m2s = (m2 || '').toString().trim();
+      const n2s = (n2 || '').toString().trim();
+
+      if (m2s.includes('~')) return parsePeriod(m2s, baseYear);
+      if (m2s && n2s) return parsePeriod(`${m2s}~${n2s}`, baseYear);
+      return parsePeriod(m2s, baseYear);
+    }
+
+    function isPerformanceSheet(ws) {
+      // 実績フォーマットの目印: ヘッダー行に "スキャンコード"（R列）や "商品名"（U列）などがある
+      const r3 = getCellValue(ws, 'R3');
+      const u3 = getCellValue(ws, 'U3');
+      const a3 = getCellValue(ws, 'A3');
+      const r3s = (r3 || '').toString();
+      const u3s = (u3 || '').toString();
+      const a3s = (a3 || '').toString();
+      return r3s.includes('スキャンコード') || u3s.includes('商品名') || a3s.toUpperCase().includes('SEQ');
+    }
+
+    function findPerformanceHeaderRow(ws) {
+      const ref = ws['!ref'] || 'A1:A1';
+      const range = XLSX.utils.decode_range(ref);
+      const maxR = Math.min(range.e.r, 50);
+      for (let r = 0; r <= maxR; r++) {
+        const addrR = XLSX.utils.encode_cell({ c: 17, r }); // R列
+        const addrA = XLSX.utils.encode_cell({ c: 0,  r }); // A列
+        const addrU = XLSX.utils.encode_cell({ c: 20, r }); // U列
+        const vR = (getCellValue(ws, addrR) || '').toString();
+        const vA = (getCellValue(ws, addrA) || '').toString();
+        const vU = (getCellValue(ws, addrU) || '').toString();
+        if (vR.includes('スキャンコード')) return r;
+        if (vA.toUpperCase().includes('SEQ') && vU.includes('商品名')) return r;
+      }
+      return 2; // (row3) fallback
+    }
+
+    function findFirstDataRow(ws, headerRowIdx) {
+      const ref = ws['!ref'] || 'A1:A1';
+      const range = XLSX.utils.decode_range(ref);
+      for (let r = headerRowIdx + 1; r <= range.e.r; r++) {
+        const addrJAN = XLSX.utils.encode_cell({ c: 17, r }); // R列
+        const jan = (getCellValue(ws, addrJAN) || '').toString().trim();
+        if (jan && !jan.includes('スキャンコード')) return r;
+      }
+      return headerRowIdx + 1;
+    }
+
+    function normalizeJan(jan) {
+      if (!jan) return '';
+      return jan.toString().trim().replace(/[^0-9]/g, '');
+    }
+
+    // JANコード（複数記入対応）: 改行/空白/カンマ等で区切られた複数JANを配列にして返す
+    // 例: "4901234567890\n4900987654321" / "490... 490..." / "JAN:490..."
+    function parseJanCodes(val) {
+      if (!val) return [];
+      const raw = val.toString();
+      // 区切りを空白に寄せる（全角スペース、改行、カンマ、スラッシュ等）
+      const normalized = raw
+        .replace(/\u3000/g, ' ')
+        .replace(/[\r\n\t]+/g, ' ')
+        .replace(/[，,、；;｜|／/]+/g, ' ')
+        .trim();
+      if (!normalized) return [];
+
+      const tokens = normalized.split(/\s+/);
+      const codes = [];
+      const seen = new Set();
+
+      tokens.forEach(tok => {
+        if (!tok) return;
+        const digits = tok.replace(/[^0-9]/g, '');
+        if (!digits) return;
+        // 7〜14桁の数字列を候補として抽出（スキャンコード/JAN-8/EAN-13/UPC等の混在も許容）
+        const matches = digits.match(/\d{7,14}/g) || [];
+        matches.forEach(code => {
+          if (!seen.has(code)) {
+            seen.add(code);
+            codes.push(code);
+          }
+        });
+      });
+
+      return codes;
+    }
+
+
+    function processPerformanceSheet(ctx) {
+      const { ws, fileName, sheetName, flyerDayFromName, flyerStart, flyerEnd, flyerPeriodText, titleText, storeText, baseYear, stores, results, itemKeys } = ctx;
+
+      const ref = ws['!ref'] || 'A1:A1';
+      const range = XLSX.utils.decode_range(ref);
+
+      const headerRowIdx = findPerformanceHeaderRow(ws);
+      const startRowIdx = findFirstDataRow(ws, headerRowIdx);
+
+      for (let r = startRowIdx; r <= range.e.r; r++) {
+        const addrTheme = XLSX.utils.encode_cell({ c: 1,  r });  // B セールテーマ
+        const addrM = XLSX.utils.encode_cell({ c: 12, r });      // M 開始
+        const addrN = XLSX.utils.encode_cell({ c: 13, r });      // N 終了
+        const addrDept = XLSX.utils.encode_cell({ c: 14, r });   // O 部門コード
+        const addrJan = XLSX.utils.encode_cell({ c: 17, r });    // R スキャンコード
+        const addrOdbms = XLSX.utils.encode_cell({ c: 18, r });  // S ODBMS
+        const addrT = XLSX.utils.encode_cell({ c: 19, r });    // T 産地名/メーカー名
+        const addrU = XLSX.utils.encode_cell({ c: 20, r });    // U 商品名
+        const addrV = XLSX.utils.encode_cell({ c: 21, r });  // V 規格1
+        const addrCost = XLSX.utils.encode_cell({ c: 27, r });   // AB 原価
+        const addrBase = XLSX.utils.encode_cell({ c: 28, r });   // AC 本体価格
+        const addrTax  = XLSX.utils.encode_cell({ c: 29, r });   // AD 税込価格
+
+        const themeVal = (getCellValue(ws, addrTheme) || '').toString().trim();
+        const saleStartRaw = (getCellValue(ws, addrM) || '').toString().trim();
+        const saleEndRaw   = (getCellValue(ws, addrN) || '').toString().trim();
+        const deptCode = (getCellValue(ws, addrDept) || '').toString().trim();
+        const janRaw = getCellValue(ws, addrJan);
+        const odbms = (getCellValue(ws, addrOdbms) || '').toString().trim();
+        const itemT = (getCellValue(ws, addrT) || '').toString().trim();
+        const itemU = (getCellValue(ws, addrU) || '').toString().trim();
+        const itemV = (getCellValue(ws, addrV) || '').toString().trim();
+        const cost = (getCellValue(ws, addrCost) || '').toString().trim();
+        const basePrice = (getCellValue(ws, addrBase) || '').toString().trim();
+        const taxPrice  = (getCellValue(ws, addrTax)  || '').toString().trim();
+
+                // JANコードは複数記入（改行/空白区切り等）があり得るので分解
+        let janCandidates = parseJanCodes(janRaw);
+        if (janCandidates.length === 0) {
+          const fallback = normalizeJan(janRaw);
+          if (fallback) janCandidates = [fallback];
+        }
+        const hasAnyJan = janCandidates.length > 0;
+
+        // 空行スキップ
+        if (!hasAnyJan && !itemU && !itemT && !themeVal && !deptCode && !saleStartRaw && !saleEndRaw) continue;
+
+        const salePeriod = (saleStartRaw || saleEndRaw)
+          ? parsePeriod(`${saleStartRaw}~${saleEndRaw || saleStartRaw}`, baseYear)
+          : null;
+
+        // 何も取れない場合は空JANの行を1つだけ残す（可視化用）
+        if (!hasAnyJan) janCandidates = [''];
+
+        janCandidates.forEach((jan) => {
+
+          const rowObj = {
+          fileName,
+          sheetName,
+          flyerDayFromName,
+          flyerStartDate: flyerStart,
+          flyerEndDate: flyerEnd,
+          title: titleText || '',
+          store: storeText || '',
+
+          dept: deptCode || '',
+          theme: themeVal || '',
+          saleTheme: themeVal || '',
+          frame: '',
+          saleStartDate: salePeriod ? salePeriod.startDate : '',
+          saleEndDate: salePeriod ? salePeriod.endDate : '',
+
+          itemQ: jan || '',
+          itemS: odbms || '',
+          itemNameT: itemT || '',
+          itemU: itemU || '',
+          itemV: itemV || '',
+
+          itemZ: cost || '',
+          itemAA: basePrice || '',
+          itemAB: taxPrice || '',
+
+          sheetIndex: '',
+          localRow: r + 1,
+          rawSale: (saleStartRaw || saleEndRaw) ? `${saleStartRaw}~${saleEndRaw}` : '',
+          rawSaleDate: (saleStartRaw || saleEndRaw) ? `${saleStartRaw}~${saleEndRaw}` : '',
+          rawTheme: themeVal || '',
+          sheetColor: '',
+          rawPeriod: flyerPeriodText || '',
+          note: ''
+        };
+
+        results.push(rowObj);
+        appendRowToTable(rowObj);
+
+        // キー生成（店舗 × 期間日付 × JAN）
+        if (stores.length > 0 && jan && salePeriod) {
+          eachDate(salePeriod.startDate, salePeriod.endDate, (dateStr) => {
+            stores.forEach(store => {
+              itemKeys.push({
+                store_cd: store.store_cd,
+                store_name: store.name_plan,
+                sales_date: dateStr,
+                jan: jan,
+                flyer_day_from_name: flyerDayFromName,
+                sheet_name: sheetName
+              });
+            });
+          });
+        }
+
+        });
+
+
+      }
+    }
+
+function getStoresFromR2(r2Text, gyotaiHint = null) {
+      const names = splitPlanStoreNames(r2Text);
+      const result = [];
+      const seen = new Set(); // store_cd の重複排除
+
+      names.forEach(rawName => {
+        const name = cleanStoreName(rawName);
+
+        // 1) 完全一致（name_plan）
+        let candidates = STORE_MASTER.filter(s => cleanStoreName(s.name_plan) === name);
+
+        // 2) 末尾一致（例: "旭川永山" vs "永山"）
+        if (candidates.length === 0) {
+          candidates = STORE_MASTER.filter(s => cleanStoreName(s.name_plan).endsWith(name));
+        }
+        if (candidates.length === 0) {
+          candidates = STORE_MASTER.filter(s => cleanStoreName(s.name_official).endsWith(name));
+        }
+
+        // 3) 業態ヒントで絞り込み
+        if (gyotaiHint) {
+          const filtered = candidates.filter(s => s.gyotai === gyotaiHint);
+          if (filtered.length > 0) candidates = filtered;
+        }
+
+        // 4) さらに緩い包含一致（最後の保険）
+        if (candidates.length === 0 && name.length >= 2) {
+          candidates = STORE_MASTER.filter(s => cleanStoreName(s.name_plan).includes(name));
+          if (gyotaiHint) {
+            const filtered = candidates.filter(s => s.gyotai === gyotaiHint);
+            if (filtered.length > 0) candidates = filtered;
+          }
+        }
+
+        candidates.forEach(store => {
+          if (!seen.has(store.store_cd)) {
+            seen.add(store.store_cd);
+            result.push(store);
+          }
+        });
+      });
+
+      return result;
+    }
+  </script>
+</body>
+</html>
