@@ -1161,21 +1161,33 @@ function processPerformanceSheet(ctx) {
 
   const headerRowIdx = findPerformanceHeaderRow(ws);
 
-  // ヘッダー名→列番号（ダブルヘッダー対応）
+  // ヘッダー名→列番号（ダブルヘッダー/改行ヘッダー対応）
   const { colMap, range } = buildHeaderColMap(ws, headerRowIdx);
 
   // 欲しい列を「列名」で解決（同義語も許容）
   const colTheme = findColByNames(colMap, ['セールテーマ', 'テーマ', '企画テーマ']);
-  const colStart = findColByNames(colMap, ['開始', '開始日', '販売開始', '販売開始日', '売出開始']);
-  const colEnd   = findColByNames(colMap, ['終了', '終了日', '販売終了', '販売終了日', '売出終了']);
+
+  const colStart = findColByNames(colMap, ['開始', '開始日', '販売開始', '販売開始日', 'チラシ開始', '売出開始']);
+  const colEnd   = findColByNames(colMap, ['終了', '終了日', '販売終了', '販売終了日', 'チラシ終了', '売出終了']);
 
   const colDept  = findColByNames(colMap, ['部門コード', '部門CD', '部門']);
 
   const colJan   = findColByNames(colMap, ['スキャンコード', 'JANコード', 'JAN', 'SCANCODE']);
 
-  const colOdbms  = findColByNames(colMap, ['ODBMSコード', 'ODBMS', 'ODBMSｺｰﾄﾞ']);
-  const colOrigin = findColByNames(colMap, ['産地名/メーカー名', '産地名', '産地']);
-  const colMaker  = findColByNames(colMap, ['メーカー名', 'メーカー']);
+  // 「ＯＤＢＭＳ\nコード」みたいな改行ヘッダー対策（全角Ｏも想定）
+  const colOdbms  = findColByNames(colMap, [
+    'ＯＤＢＭＳコード', 'ＯＤＢＭＳｺｰﾄﾞ', 'ＯＤＢＭＳ',       // 全角
+    'ODBMSコード', 'ODBMS', 'ODBMSｺｰﾄﾞ'
+  ]);
+
+  // ここがポイント：同一セル内改行「産地名\nメーカー名」→ 正規化で「産地名メーカー名」になる
+  const colOriginMaker = findColByNames(colMap, [
+    '産地名メーカー名',     // 改行セルがこの形になることが多い
+    '産地名_メーカー名',    // ダブルヘッダー結合のとき
+    '産地名/メーカー名',    // もしスラッシュ表記のファイルがあれば
+    '産地名メーカー',       // 表記ゆれ保険
+    '産地名', 'メーカー名'  // 最後の保険（単独表記のファイル用）
+  ]);
 
   const colItemName = findColByNames(colMap, ['商品名', '商品名称']);
   const colSpec1    = findColByNames(colMap, ['規格1', '規格１', '規格', '規格(1)']);
@@ -1184,7 +1196,7 @@ function processPerformanceSheet(ctx) {
   const colBase = findColByNames(colMap, ['本体価格', '本体売価', '本体売価(円)']);
   const colTax  = findColByNames(colMap, ['税込価格', '税込売価', '総額売価', '売価(税込)']);
 
-  // データ開始行（JAN列が見つからない場合は旧R列fallbackは findFirstDataRow 側で処理）
+  // データ開始行（JAN列が見つからない場合でも、findFirstDataRow側でfallbackできる想定）
   const startRowIdx = findFirstDataRow(ws, headerRowIdx, colJan);
 
   for (let r = startRowIdx; r <= range.e.r; r++) {
@@ -1193,12 +1205,11 @@ function processPerformanceSheet(ctx) {
     const saleEndRaw   = getCellByCol(ws, colEnd,   r);
     const deptCode     = getCellByCol(ws, colDept,  r);
 
-    const janRaw   = getCellByCol(ws, colJan, r);
-    const odbms    = getCellByCol(ws, colOdbms, r);
+    const janRaw  = getCellByCol(ws, colJan, r);
+    const odbms   = getCellByCol(ws, colOdbms, r);
 
-    const originVal = getCellByCol(ws, colOrigin, r);
-    const makerVal  = (colMaker != null && colMaker !== colOrigin) ? getCellByCol(ws, colMaker, r) : '';
-    const originMaker = [originVal, makerVal].filter(Boolean).join(' / '); // 両方ある時は結合
+    // 産地名/メーカー名（同一列）
+    const originMaker = getCellByCol(ws, colOriginMaker, r);
 
     const itemName = getCellByCol(ws, colItemName, r);
     const spec1    = getCellByCol(ws, colSpec1, r);
@@ -1244,10 +1255,10 @@ function processPerformanceSheet(ctx) {
         saleEndDate: salePeriod ? salePeriod.endDate : '',
 
         itemQ: jan || '',
-        itemS: odbms || '',           // ODBMSコード（無ければ空）
-        itemNameT: originMaker || '', // 産地/メーカー（無ければ空）
-        itemU: itemName || '',        // 商品名（無ければ空）
-        itemV: spec1 || '',           // 規格1（無ければ空）
+        itemS: odbms || '',              // ODBMSコード（無ければ空）
+        itemNameT: originMaker || '',    // 産地名/メーカー名（同一列）
+        itemU: itemName || '',           // 商品名
+        itemV: spec1 || '',              // 規格1
 
         itemZ: cost || '',
         itemAA: basePrice || '',
