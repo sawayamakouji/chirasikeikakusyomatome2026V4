@@ -488,8 +488,8 @@ const STORE_MASTER = [
                     flyerDayFromName: flyerDayFromName,
                     flyerStartDate: flyerStart,
                     flyerEndDate: flyerEnd,
-                    title: n2 || '',
-                    store: r2 || '',
+                    title: titleText || '',
+                    store: storeText || '',
                     dept: currentDept,
                     frameCount: currentFrames,
                     saleTheme: themeVal,
@@ -599,10 +599,6 @@ const STORE_MASTER = [
       return '';
     }
 
-      if (cell.w != null) return String(cell.w);
-      if (cell.v != null) return String(cell.v);
-      return '';
-    }
 
     // =====================================================
     // 日付期間パース: "12/1～12/3" 等 → {startDate, endDate}
