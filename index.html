@@ -583,16 +583,21 @@ const STORE_MASTER = [
     function getCellValue(ws, addr) {
       const cell = ws[addr];
       if (!cell) return '';
-
-      // Excelの数値シリアル日付の場合は YYYY/M/D に変換
+    
+      // Excelの数値シリアル日付の場合は M/D に変換（年は出さない＝baseYearで強制補完させる）
       if (cell.t === 'n' && typeof cell.v === 'number' && cell.v > 20000 && cell.v < 60000) {
         if (XLSX.SSF && typeof XLSX.SSF.parse_date_code === 'function') {
           const d = XLSX.SSF.parse_date_code(cell.v);
-          if (d && d.y && d.m && d.d) {
-            return `${d.y}/${d.m}/${d.d}`;
+          if (d && d.m && d.d) {
+            return `${d.m}/${d.d}`; // ★ここを YYYY/M/D から M/D に変更
           }
         }
       }
+    
+      if (cell.w != null) return String(cell.w);
+      if (cell.v != null) return String(cell.v);
+      return '';
+    }
 
       if (cell.w != null) return String(cell.w);
       if (cell.v != null) return String(cell.v);
@@ -606,7 +611,7 @@ const STORE_MASTER = [
       if (!text) return null;
       let s = String(text).trim();
       if (!s) return null;
-
+    
       s = s.replace(/\r?\n/g, ' ');
       s = s.replace(/上午\/下午.*$/g, '');
       s = s.replace(/[午前後上午下午]\s*\d{1,2}[:時]\d{1,2}(?::\d{1,2})?.*$/g, '');
@@ -616,21 +621,21 @@ const STORE_MASTER = [
       s = s.replace(/\s+/g, '');
       s = s.replace(/年/g, '/').replace(/月/g, '/').replace(/日/g, '');
       s = s.replace(/\(.*?\)/g, '');
-
+    
       if (!s) return null;
-
+    
       let startPart = s;
       let endPart = null;
-
+    
       if (s.includes('~')) {
         const parts = s.split('~');
         startPart = parts[0] || '';
         endPart = parts[1] || '';
       }
-
+    
       const start = parseDatePart(startPart, defaultYear, null);
       if (!start) return null;
-
+    
       let end = null;
       if (endPart && endPart.trim() !== '') {
         end = parseDatePart(endPart, defaultYear, start.year);
@@ -644,33 +649,44 @@ const STORE_MASTER = [
       } else {
         end = { ...start };
       }
-
       if (!end) end = { ...start };
-
+    
+      // ★年跨ぎ補正：終了(月日)が開始(月日)より前なら翌年扱い
+      if (
+        end.year === start.year &&
+        (end.month < start.month || (end.month === start.month && end.day < start.day))
+      ) {
+        end.year = start.year + 1;
+      }
+    
       const startDate = `${start.year}/${start.month}/${start.day}`;
       const endDate = `${end.year}/${end.month}/${end.day}`;
       return { startDate, endDate };
     }
 
+
+
     function parseDatePart(part, defaultYear, carryYear) {
       part = (part || '').trim();
       if (!part) return null;
+    
       const sp = part.split('/').filter(Boolean);
-
+    
       let year, month, day;
-
+    
       if (sp.length === 3) {
-        year = parseInt(sp[0], 10);
+        // ★入力に年が入っていても捨てて defaultYear に強制
+        year  = defaultYear;
         month = parseInt(sp[1], 10);
-        day = parseInt(sp[2], 10);
+        day   = parseInt(sp[2], 10);
       } else if (sp.length === 2) {
-        year = carryYear != null ? carryYear : defaultYear;
+        year  = carryYear != null ? carryYear : defaultYear;
         month = parseInt(sp[0], 10);
-        day = parseInt(sp[1], 10);
+        day   = parseInt(sp[1], 10);
       } else {
         return null;
       }
-
+    
       if (!year || !month || !day) return null;
       return { year, month, day };
     }
