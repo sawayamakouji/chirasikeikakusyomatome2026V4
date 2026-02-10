@@ -974,43 +974,142 @@ const STORE_MASTER = [
     }
 
     function isPerformanceSheet(ws) {
-      // 実績フォーマットの目印: ヘッダー行に "スキャンコード"（R列）や "商品名"（U列）などがある
-      const r3 = getCellValue(ws, 'R3');
-      const u3 = getCellValue(ws, 'U3');
-      const a3 = getCellValue(ws, 'A3');
-      const r3s = (r3 || '').toString();
-      const u3s = (u3 || '').toString();
-      const a3s = (a3 || '').toString();
-      return r3s.includes('スキャンコード') || u3s.includes('商品名') || a3s.toUpperCase().includes('SEQ');
-    }
-
-    function findPerformanceHeaderRow(ws) {
-      const ref = ws['!ref'] || 'A1:A1';
-      const range = XLSX.utils.decode_range(ref);
-      const maxR = Math.min(range.e.r, 50);
+      if (!ws || !ws['!ref']) return false;
+      const range = XLSX.utils.decode_range(ws['!ref']);
+      const maxR = Math.min(range.e.r, 20);
+      const maxC = Math.min(range.e.c, 80);
+    
+      let foundScan = false;
+      let foundItem = false;
+    
       for (let r = 0; r <= maxR; r++) {
-        const addrR = XLSX.utils.encode_cell({ c: 17, r }); // R列
-        const addrA = XLSX.utils.encode_cell({ c: 0,  r }); // A列
-        const addrU = XLSX.utils.encode_cell({ c: 20, r }); // U列
-        const vR = (getCellValue(ws, addrR) || '').toString();
-        const vA = (getCellValue(ws, addrA) || '').toString();
-        const vU = (getCellValue(ws, addrU) || '').toString();
-        if (vR.includes('スキャンコード')) return r;
-        if (vA.toUpperCase().includes('SEQ') && vU.includes('商品名')) return r;
+        for (let c = 0; c <= maxC; c++) {
+          const v = (getCellValue(ws, XLSX.utils.encode_cell({ c, r })) || '').toString();
+          if (!v) continue;
+          const u = v.toUpperCase();
+    
+          if (v.includes('スキャンコード') || u.includes('SEQ') || u.includes('JAN')) foundScan = true;
+          if (v.includes('商品名') || v.includes('規格') || u.includes('ODBMS')) foundItem = true;
+    
+          if (foundScan && foundItem) return true;
+        }
       }
-      return 2; // (row3) fallback
+      return false;
     }
-
-    function findFirstDataRow(ws, headerRowIdx) {
+    
+    // =====================================================
+    // 実績フォーマット: ヘッダー名→列番号 マッピング（ダブルヘッダー対応）
+    // =====================================================
+    function normalizeHeaderName(s) {
+      return (s || '')
+        .toString()
+        .trim()
+        .replace(/\u3000/g, ' ')
+        .replace(/\s+/g, '')
+        .replace(/[：:]/g, '')
+        .replace(/[／]/g, '/')
+        // 全角英数→半角
+        .replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+        .replace(/[Ａ-Ｚａ-ｚ]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+        .toUpperCase();
+    }
+    
+    function isLikelyHeaderText(s) {
+      const t = (s || '').toString().trim();
+      if (!t) return false;
+    
+      // 数字だらけ（JANなど）を弾く
+      const digits = t.replace(/[^0-9]/g, '');
+      if (digits.length >= 6 && digits.length / t.length > 0.6) return false;
+    
+      const u = t.toUpperCase();
+      const keys = [
+        'コード','商品','規格','原価','価格','部門','セール','開始','終了',
+        'スキャン','JAN','SEQ','売価','数量','点数','メーカー','産地','ODBMS'
+      ];
+      return keys.some(k => u.includes(k) || t.includes(k));
+    }
+    
+    function buildHeaderColMap(ws, headerRowIdx) {
       const ref = ws['!ref'] || 'A1:A1';
       const range = XLSX.utils.decode_range(ref);
-      for (let r = headerRowIdx + 1; r <= range.e.r; r++) {
-        const addrJAN = XLSX.utils.encode_cell({ c: 17, r }); // R列
-        const jan = (getCellValue(ws, addrJAN) || '').toString().trim();
-        if (jan && !jan.includes('スキャンコード')) return r;
+      const maxC = Math.min(range.e.c, 120);
+    
+      const colMap = {}; // key: normalized header name -> col index
+    
+      for (let c = range.s.c; c <= maxC; c++) {
+        const h1 = getCellValue(ws, XLSX.utils.encode_cell({ c, r: headerRowIdx }))?.toString().trim() || '';
+        const h2 = getCellValue(ws, XLSX.utils.encode_cell({ c, r: headerRowIdx + 1 }))?.toString().trim() || '';
+    
+        const n1 = normalizeHeaderName(h1);
+        const n2 = normalizeHeaderName(h2);
+    
+        // 1段目だけでも登録
+        if (n1 && colMap[n1] == null) colMap[n1] = c;
+    
+        // 2段目は「ヘッダーらしい」時だけ優先登録（次行がデータ行でも壊れにくくする）
+        if (h2 && isLikelyHeaderText(h2) && n2 && colMap[n2] == null) colMap[n2] = c;
+    
+        // 連結キー（商品情報_商品名 みたいなパターン保険）
+        if (h1 && h2 && isLikelyHeaderText(h2)) {
+          const combined = normalizeHeaderName(`${h1}_${h2}`);
+          if (combined && colMap[combined] == null) colMap[combined] = c;
+        }
       }
-      return headerRowIdx + 1;
+    
+      return { colMap, range };
     }
+    
+    function findColByNames(colMap, candidates) {
+      for (const name of candidates) {
+        const key = normalizeHeaderName(name);
+        if (key && colMap[key] != null) return colMap[key];
+      }
+      return null;
+    }
+    
+    function getCellByCol(ws, colIdx, rowIdx) {
+      if (colIdx == null) return '';
+      return (getCellValue(ws, XLSX.utils.encode_cell({ c: colIdx, r: rowIdx })) || '').toString().trim();
+    }
+    
+      function findPerformanceHeaderRow(ws) {
+        const ref = ws['!ref'] || 'A1:A1';
+        const range = XLSX.utils.decode_range(ref);
+        const maxR = Math.min(range.e.r, 60);
+        const maxC = Math.min(range.e.c, 80);
+      
+        for (let r = 0; r <= maxR; r++) {
+          let hasScan = false;
+          let hasItem = false;
+      
+          for (let c = 0; c <= maxC; c++) {
+            const v = (getCellValue(ws, XLSX.utils.encode_cell({ c, r })) || '').toString();
+            if (!v) continue;
+            const u = v.toUpperCase();
+      
+            if (v.includes('スキャンコード') || u.includes('SEQ') || u.includes('JAN')) hasScan = true;
+            if (v.includes('商品名') || v.includes('規格') || u.includes('ODBMS')) hasItem = true;
+      
+            if (hasScan && hasItem) return r;
+          }
+        }
+        return 2; // fallback（Excel上の3行目想定）
+      }
+
+      function findFirstDataRow(ws, headerRowIdx, janColIdx) {
+        const ref = ws['!ref'] || 'A1:A1';
+        const range = XLSX.utils.decode_range(ref);
+        const col = (janColIdx != null) ? janColIdx : 17; // 見つからない時だけ旧R列fallback
+      
+        for (let r = headerRowIdx + 1; r <= range.e.r; r++) {
+          const v = (getCellValue(ws, XLSX.utils.encode_cell({ c: col, r })) || '').toString().trim();
+          const digits = v.replace(/[^0-9]/g, '');
+          // 7桁以上の数字が入ってたら「データ行っぽい」
+          if (digits.length >= 7) return r;
+        }
+        return headerRowIdx + 1;
+      }
 
     function normalizeJan(jan) {
       if (!jan) return '';
@@ -1052,122 +1151,139 @@ const STORE_MASTER = [
     }
 
 
-    function processPerformanceSheet(ctx) {
-      const { ws, fileName, sheetName, flyerDayFromName, flyerStart, flyerEnd, flyerPeriodText, titleText, storeText, baseYear, stores, results, itemKeys } = ctx;
+function processPerformanceSheet(ctx) {
+  const {
+    ws, fileName, sheetName, flyerDayFromName,
+    flyerStart, flyerEnd, flyerPeriodText,
+    titleText, storeText, baseYear, stores,
+    results, itemKeys
+  } = ctx;
 
-      const ref = ws['!ref'] || 'A1:A1';
-      const range = XLSX.utils.decode_range(ref);
+  const headerRowIdx = findPerformanceHeaderRow(ws);
 
-      const headerRowIdx = findPerformanceHeaderRow(ws);
-      const startRowIdx = findFirstDataRow(ws, headerRowIdx);
+  // ヘッダー名→列番号（ダブルヘッダー対応）
+  const { colMap, range } = buildHeaderColMap(ws, headerRowIdx);
 
-      for (let r = startRowIdx; r <= range.e.r; r++) {
-        const addrTheme = XLSX.utils.encode_cell({ c: 1,  r });  // B セールテーマ
-        const addrM = XLSX.utils.encode_cell({ c: 12, r });      // M 開始
-        const addrN = XLSX.utils.encode_cell({ c: 13, r });      // N 終了
-        const addrDept = XLSX.utils.encode_cell({ c: 14, r });   // O 部門コード
-        const addrJan = XLSX.utils.encode_cell({ c: 17, r });    // R スキャンコード
-        const addrOdbms = XLSX.utils.encode_cell({ c: 18, r });  // S ODBMS
-        const addrT = XLSX.utils.encode_cell({ c: 19, r });    // T 産地名/メーカー名
-        const addrU = XLSX.utils.encode_cell({ c: 20, r });    // U 商品名
-        const addrV = XLSX.utils.encode_cell({ c: 21, r });  // V 規格1
-        const addrCost = XLSX.utils.encode_cell({ c: 27, r });   // AB 原価
-        const addrBase = XLSX.utils.encode_cell({ c: 28, r });   // AC 本体価格
-        const addrTax  = XLSX.utils.encode_cell({ c: 29, r });   // AD 税込価格
+  // 欲しい列を「列名」で解決（同義語も許容）
+  const colTheme = findColByNames(colMap, ['セールテーマ', 'テーマ', '企画テーマ']);
+  const colStart = findColByNames(colMap, ['開始', '開始日', '販売開始', '販売開始日', '売出開始']);
+  const colEnd   = findColByNames(colMap, ['終了', '終了日', '販売終了', '販売終了日', '売出終了']);
 
-        const themeVal = (getCellValue(ws, addrTheme) || '').toString().trim();
-        const saleStartRaw = (getCellValue(ws, addrM) || '').toString().trim();
-        const saleEndRaw   = (getCellValue(ws, addrN) || '').toString().trim();
-        const deptCode = (getCellValue(ws, addrDept) || '').toString().trim();
-        const janRaw = getCellValue(ws, addrJan);
-        const odbms = (getCellValue(ws, addrOdbms) || '').toString().trim();
-        const itemT = (getCellValue(ws, addrT) || '').toString().trim();
-        const itemU = (getCellValue(ws, addrU) || '').toString().trim();
-        const itemV = (getCellValue(ws, addrV) || '').toString().trim();
-        const cost = (getCellValue(ws, addrCost) || '').toString().trim();
-        const basePrice = (getCellValue(ws, addrBase) || '').toString().trim();
-        const taxPrice  = (getCellValue(ws, addrTax)  || '').toString().trim();
+  const colDept  = findColByNames(colMap, ['部門コード', '部門CD', '部門']);
 
-                // JANコードは複数記入（改行/空白区切り等）があり得るので分解
-        let janCandidates = parseJanCodes(janRaw);
-        if (janCandidates.length === 0) {
-          const fallback = normalizeJan(janRaw);
-          if (fallback) janCandidates = [fallback];
-        }
-        const hasAnyJan = janCandidates.length > 0;
+  const colJan   = findColByNames(colMap, ['スキャンコード', 'JANコード', 'JAN', 'SCANCODE']);
 
-        // 空行スキップ
-        if (!hasAnyJan && !itemU && !itemT && !themeVal && !deptCode && !saleStartRaw && !saleEndRaw) continue;
+  const colOdbms  = findColByNames(colMap, ['ODBMSコード', 'ODBMS', 'ODBMSｺｰﾄﾞ']);
+  const colOrigin = findColByNames(colMap, ['産地名/メーカー名', '産地名', '産地']);
+  const colMaker  = findColByNames(colMap, ['メーカー名', 'メーカー']);
 
-        const salePeriod = (saleStartRaw || saleEndRaw)
-          ? parsePeriod(`${saleStartRaw}~${saleEndRaw || saleStartRaw}`, baseYear)
-          : null;
+  const colItemName = findColByNames(colMap, ['商品名', '商品名称']);
+  const colSpec1    = findColByNames(colMap, ['規格1', '規格１', '規格', '規格(1)']);
 
-        // 何も取れない場合は空JANの行を1つだけ残す（可視化用）
-        if (!hasAnyJan) janCandidates = [''];
+  const colCost = findColByNames(colMap, ['原価']);
+  const colBase = findColByNames(colMap, ['本体価格', '本体売価', '本体売価(円)']);
+  const colTax  = findColByNames(colMap, ['税込価格', '税込売価', '総額売価', '売価(税込)']);
 
-        janCandidates.forEach((jan) => {
+  // データ開始行（JAN列が見つからない場合は旧R列fallbackは findFirstDataRow 側で処理）
+  const startRowIdx = findFirstDataRow(ws, headerRowIdx, colJan);
 
-          const rowObj = {
-          fileName,
-          sheetName,
-          flyerDayFromName,
-          flyerStartDate: flyerStart,
-          flyerEndDate: flyerEnd,
-          title: titleText || '',
-          store: storeText || '',
+  for (let r = startRowIdx; r <= range.e.r; r++) {
+    const themeVal     = getCellByCol(ws, colTheme, r);
+    const saleStartRaw = getCellByCol(ws, colStart, r);
+    const saleEndRaw   = getCellByCol(ws, colEnd,   r);
+    const deptCode     = getCellByCol(ws, colDept,  r);
 
-          dept: deptCode || '',
-          theme: themeVal || '',
-          saleTheme: themeVal || '',
-          frame: '',
-          saleStartDate: salePeriod ? salePeriod.startDate : '',
-          saleEndDate: salePeriod ? salePeriod.endDate : '',
+    const janRaw   = getCellByCol(ws, colJan, r);
+    const odbms    = getCellByCol(ws, colOdbms, r);
 
-          itemQ: jan || '',
-          itemS: odbms || '',
-          itemNameT: itemT || '',
-          itemU: itemU || '',
-          itemV: itemV || '',
+    const originVal = getCellByCol(ws, colOrigin, r);
+    const makerVal  = (colMaker != null && colMaker !== colOrigin) ? getCellByCol(ws, colMaker, r) : '';
+    const originMaker = [originVal, makerVal].filter(Boolean).join(' / '); // 両方ある時は結合
 
-          itemZ: cost || '',
-          itemAA: basePrice || '',
-          itemAB: taxPrice || '',
+    const itemName = getCellByCol(ws, colItemName, r);
+    const spec1    = getCellByCol(ws, colSpec1, r);
 
-          sheetIndex: '',
-          localRow: r + 1,
-          rawSale: (saleStartRaw || saleEndRaw) ? `${saleStartRaw}~${saleEndRaw}` : '',
-          rawSaleDate: (saleStartRaw || saleEndRaw) ? `${saleStartRaw}~${saleEndRaw}` : '',
-          rawTheme: themeVal || '',
-          sheetColor: '',
-          rawPeriod: flyerPeriodText || '',
-          note: ''
-        };
+    const cost      = getCellByCol(ws, colCost, r);
+    const basePrice = getCellByCol(ws, colBase, r);
+    const taxPrice  = getCellByCol(ws, colTax,  r);
 
-        results.push(rowObj);
-        appendRowToTable(rowObj);
+    // JANコードは複数記入対応（改行/空白区切り等）
+    let janCandidates = parseJanCodes(janRaw);
+    if (janCandidates.length === 0) {
+      const fallback = normalizeJan(janRaw);
+      if (fallback) janCandidates = [fallback];
+    }
+    const hasAnyJan = janCandidates.length > 0;
 
-        // キー生成（店舗 × 期間日付 × JAN）
-        if (stores.length > 0 && jan && salePeriod) {
-          eachDate(salePeriod.startDate, salePeriod.endDate, (dateStr) => {
-            stores.forEach(store => {
-              itemKeys.push({
-                store_cd: store.store_cd,
-                store_name: store.name_plan,
-                sales_date: dateStr,
-                jan: jan,
-                flyer_day_from_name: flyerDayFromName,
-                sheet_name: sheetName
-              });
+    // 空行スキップ
+    if (!hasAnyJan && !itemName && !originMaker && !themeVal && !deptCode && !saleStartRaw && !saleEndRaw) continue;
+
+    const salePeriod = (saleStartRaw || saleEndRaw)
+      ? parsePeriod(`${saleStartRaw}~${saleEndRaw || saleStartRaw}`, baseYear)
+      : null;
+
+    // 何も取れない場合は空JANの行を1つだけ残す（可視化用）
+    if (!hasAnyJan) janCandidates = [''];
+
+    janCandidates.forEach((jan) => {
+      const rowObj = {
+        fileName,
+        sheetName,
+        flyerDayFromName,
+        flyerStartDate: flyerStart,
+        flyerEndDate: flyerEnd,
+        title: titleText || '',
+        store: storeText || '',
+
+        dept: deptCode || '',
+        theme: themeVal || '',
+        saleTheme: themeVal || '',
+        frame: '',
+
+        saleStartDate: salePeriod ? salePeriod.startDate : '',
+        saleEndDate: salePeriod ? salePeriod.endDate : '',
+
+        itemQ: jan || '',
+        itemS: odbms || '',           // ODBMSコード（無ければ空）
+        itemNameT: originMaker || '', // 産地/メーカー（無ければ空）
+        itemU: itemName || '',        // 商品名（無ければ空）
+        itemV: spec1 || '',           // 規格1（無ければ空）
+
+        itemZ: cost || '',
+        itemAA: basePrice || '',
+        itemAB: taxPrice || '',
+
+        sheetIndex: '',
+        localRow: r + 1,
+        rawSale: (saleStartRaw || saleEndRaw) ? `${saleStartRaw}~${saleEndRaw}` : '',
+        rawSaleDate: (saleStartRaw || saleEndRaw) ? `${saleStartRaw}~${saleEndRaw}` : '',
+        rawTheme: themeVal || '',
+        sheetColor: '',
+        rawPeriod: flyerPeriodText || '',
+        note: ''
+      };
+
+      results.push(rowObj);
+      appendRowToTable(rowObj);
+
+      // キー生成（店舗 × 期間日付 × JAN）
+      if (stores.length > 0 && jan && salePeriod) {
+        eachDate(salePeriod.startDate, salePeriod.endDate, (dateStr) => {
+          stores.forEach(store => {
+            itemKeys.push({
+              store_cd: store.store_cd,
+              store_name: store.name_plan,
+              sales_date: dateStr,
+              jan: jan,
+              flyer_day_from_name: flyerDayFromName,
+              sheet_name: sheetName
             });
           });
-        }
-
         });
-
-
       }
-    }
+    });
+  }
+}
 
 function getStoresFromR2(r2Text, gyotaiHint = null) {
       const names = splitPlanStoreNames(r2Text);
